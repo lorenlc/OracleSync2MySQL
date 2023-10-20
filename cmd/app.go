@@ -6,13 +6,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/godror/godror"
-	"github.com/spf13/viper"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/godror/godror"
+	"github.com/spf13/viper"
+
 	//_ "github.com/sijms/go-ora/v2"
 	_ "github.com/godror/godror"
 )
@@ -48,7 +50,10 @@ func PrepareSrc(connStr *connect.DbConnStr) {
 	var err error
 	//srcDb, err = sql.Open("oracle", srcConn)  //go-ora
 	//srcDb, err = sql.Open("godror", `user="one" password="oracle" connectString="192.168.189.200:1521/orcl" libDir="/Users/kay/Documents/database/oracle/instantclient_19_8_mac"`)//直接连接方式
-	oracleConnStr.LibDir = "instantclient"
+	oracleConnStr.LibDir = os.Getenv("LD_LIBRARY_PATH") //"instantclient"
+	if oracleConnStr.LibDir == "" {
+		oracleConnStr.LibDir = "instantclient"
+	}
 	oracleConnStr.Username = srcUserName
 	oracleConnStr.Password = godror.NewPassword(srcPassword)
 	oracleConnStr.ConnectString = fmt.Sprintf("%s:%s/%s", srcHost, strconv.Itoa(srcPort), srcDatabase)
@@ -73,7 +78,8 @@ func PrepareDest(connStr *connect.DbConnStr) {
 	destPassword := connStr.DestPassword
 	destDatabase := connStr.DestDatabase
 	destPort := connStr.DestPort
-	destConn := fmt.Sprintf("%s:%s@tcp(%s:%v)/%s?charset=utf8&maxAllowedPacket=0", destUserName, destPassword, destHost, destPort, destDatabase)
+	destCharset := "utf8mb4"
+	destConn := fmt.Sprintf("%s:%s@tcp(%s:%v)/%s?charset=%s&maxAllowedPacket=0", destUserName, destPassword, destHost, destPort, destDatabase, destCharset)
 	var err error
 	destDb, err = sql.Open("mysql", destConn)
 	if err != nil {
