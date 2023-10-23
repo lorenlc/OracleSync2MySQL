@@ -12,3 +12,7 @@ compare.sh
 instantclient
 binary
 OracleSync2MySQL
+OracleSync2MySQL.exe
+__debug*.exe
+launch.json
+/test/*

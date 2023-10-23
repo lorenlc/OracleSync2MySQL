@@ -35,6 +35,10 @@ func getConn() (connStr *connect.DbConnStr) {
 	connStr.DestUserName = viper.GetString("dest.username")
 	connStr.DestPassword = viper.GetString("dest.password")
 	connStr.DestDatabase = viper.GetString("dest.database")
+	connStr.DestCharset = viper.GetString("dest.charset")
+	if connStr.DestCharset == "" {
+		connStr.DestCharset = "utf8mb4"
+	}
 	return connStr
 }
 
@@ -78,7 +82,7 @@ func PrepareDest(connStr *connect.DbConnStr) {
 	destPassword := connStr.DestPassword
 	destDatabase := connStr.DestDatabase
 	destPort := connStr.DestPort
-	destCharset := "utf8mb4"
+	destCharset := connStr.DestCharset
 	destConn := fmt.Sprintf("%s:%s@tcp(%s:%v)/%s?charset=%s&maxAllowedPacket=0", destUserName, destPassword, destHost, destPort, destDatabase, destCharset)
 	var err error
 	destDb, err = sql.Open("mysql", destConn)
