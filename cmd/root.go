@@ -3,8 +3,8 @@ package cmd
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
-	"github.com/mitchellh/go-homedir"
 	"io"
 	"math"
 	"os"
@@ -14,13 +14,31 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mitchellh/go-homedir"
+
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"OracleSync2MySQL/connect"
+
+	"io/fs"
+
 	"github.com/liushuochen/gotable"
 	"github.com/spf13/viper"
 )
+
+type tableLogRec struct {
+	TableName         string    `json:"tableName"`
+	SrcDatabase       string    `json:"srcDatabase"`
+	SrcDatabaseUser   string    `json:"srcDatabaseUser"`
+	DestDatabase      string    `json:"destDatabase"`
+	DestDatabaseUser  string    `json:"destDatabaseUser"`
+	StartDataTransfer time.Time `json:"startDataTransfer"`
+	EndDataTransfer   time.Time `json:"endDataTransfer"`
+	RowsProcessed     int       `json:"rowsProcessed"`
+	TotalRows         int       `json:"totalRows"`
+	ExecTime          float64   `json:"execTime"`
+}
 
 var log = logrus.New()
 var cfgFile string
@@ -109,14 +127,14 @@ func startDataTransfer(connStr *connect.DbConnStr) {
 	//遍历tableMap，先遍历表，再遍历该表的sql切片集合
 	migDataStart := time.Now()
 	for tableName, sqlFullSplit := range tableMap { //获取单个表名
-		colName, colType, tableNotExist := preMigData(tableName, sqlFullSplit) //获取单表的列名，列字段类型
-		if !tableNotExist {                                                    //目标表存在就执行数据迁移
+		colName, colType, tableNotExist, numberOfRows := preMigData(tableName, sqlFullSplit) //获取单表的列名，列字段类型
+		if !tableNotExist {                                                                  //目标表存在就执行数据迁移
 			// 遍历该表的sql切片(多个分页查询或者全表查询sql)
 			for index, sqlSplitSql := range sqlFullSplit {
 				log.Info("Table ", tableName, " total task ", len(sqlFullSplit))
 				ch <- struct{}{} //在没有被接收的情况下，至多发送n个消息到通道则被阻塞，若缓存区满，则阻塞，这里相当于占位置排队
 				wg.Add(1)        // 每运行一个goroutine等待组加1
-				go runMigration(logDir, index, tableName, sqlSplitSql, ch, colName, colType)
+				go runMigration(logDir, index, tableName, sqlSplitSql, ch, colName, colType, numberOfRows)
 			}
 		} else { //目标表不存在就往通道写1
 			log.Info("table not exists ", tableName)
@@ -267,7 +285,7 @@ func fetchTableMap(pageSize int, excludeTable []string) (tableMap map[string][]s
 }
 
 // 迁移数据前先清空目标表数据，并获取每个表查询语句的列名以及列字段类型,表如果不存在返回布尔值true
-func preMigData(tableName string, sqlFullSplit []string) (dbCol []string, dbColType []string, tableNotExist bool) {
+func preMigData(tableName string, sqlFullSplit []string) (dbCol []string, dbColType []string, tableNotExist bool, numberOfRows int) {
 	var sqlCol string
 	// 在写数据前，先清空下目标表数据
 	truncateSql := "truncate table " + fmt.Sprintf("`") + tableName + fmt.Sprintf("`")
@@ -304,7 +322,17 @@ func preMigData(tableName string, sqlFullSplit []string) (dbCol []string, dbColT
 		dbCol = append(dbCol, strings.ToLower(value)) //由于CopyIn方法每个列都会使用双引号包围，这里把列名全部转为小写(pg库默认都是小写的列名)，这样即便加上双引号也能正确查询到列
 		dbColType = append(dbColType, strings.ToUpper(colType[i].DatabaseTypeName()))
 	}
-	return dbCol, dbColType, tableNotExist
+	if selFromYml {
+		sqlCol = "select count(*) from (" + sqlFullSplit[0] + " )aa" // 在自定义sql外层套一个select * from (自定义sql) where 1=0
+	} else {
+		sqlCol = "select count(*) from " + "\"" + tableName + "\""
+	}
+	srcDb.QueryRow(sqlCol).Scan(&numberOfRows)
+	/*if err != nil {
+		log.Error(err)
+	}*/
+
+	return dbCol, dbColType, tableNotExist, numberOfRows
 }
 
 // 根据表是否有主键，自动生成每个表查询sql，有主键就生成分页查询组成的切片，没主键就拼成全表查询sql，最后返回sql切片
@@ -343,10 +371,24 @@ func prepareSqlStr(tableName string, pageSize int) (sqlList []string) {
 }
 
 // 使用占位符,目前测下来，在大数据量下相比较不使用占位符的方式，效率较高，遇到blob类型可直接使用go的byte类型数据
-func runMigration(logDir string, startPage int, tableName string, sqlStr string, ch chan struct{}, columns []string, colType []string) {
+func runMigration(logDir string, startPage int, tableName string, sqlStr string, ch chan struct{}, columns []string, colType []string, numberOfRows int) {
 	defer wg.Done()
 	log.Info(fmt.Sprintf("%v Taskid[%d] Processing TableData %v ", time.Now().Format("2006-01-02 15:04:05.000000"), startPage, tableName))
 	start := time.Now()
+
+	tableLog := tableLogRec{
+		TableName:         tableName,
+		SrcDatabase:       "",
+		SrcDatabaseUser:   "",
+		DestDatabase:      "",
+		DestDatabaseUser:  "",
+		StartDataTransfer: start,
+		//EndDataTransfer:   time.Now().Format("Mon Jan _2"),
+		RowsProcessed: 0,
+		TotalRows:     numberOfRows,
+		ExecTime:      0,
+	}
+
 	// 直接查询,即查询全表或者分页查询(SELECT t.* FROM (SELECT id FROM test  ORDER BY id LIMIT ?, ?) temp LEFT JOIN test t ON temp.id = t.id;)
 	sqlStr = "/* goapp */" + sqlStr
 	// 查询源库的sql
@@ -462,6 +504,12 @@ func runMigration(logDir string, startPage int, tableName string, sqlStr string,
 					log.Error(err)
 				}
 				log.Info(time.Now(), " ID[", startPage, "] insert ", tableName, " ", totalRow, " rows")
+
+				tableLog.RowsProcessed = totalRow
+				tableLog.ExecTime = time.Since(start).Seconds()
+				file, _ := json.MarshalIndent(tableLog, "", " ")
+				_ = os.WriteFile("log/tables/"+tableName+".json", file, fs.FileMode(0644))
+
 				totalPrepareValues = nil
 				totalInsertCol = ""
 			}
@@ -517,9 +565,22 @@ func runMigration(logDir string, startPage int, tableName string, sqlStr string,
 		//	log.Error("Commit failed ", err)
 		//}
 		log.Info(time.Now().Format("2006-01-02 15:04:05.000"), " ID[", startPage, "] insert ", tableName, " ", totalRow, " rows")
+
+		tableLog.RowsProcessed = totalRow
+		tableLog.ExecTime = time.Since(start).Seconds()
+		file, _ := json.MarshalIndent(tableLog, "", " ")
+		_ = os.WriteFile("log/tables/"+tableName+".json", file, fs.FileMode(0644))
+
 	}
 	cost := time.Since(start) //计算时间差
 	log.Info(fmt.Sprintf("%v Taskid[%d] table %v complete,processed %d rows,execTime %s", time.Now().Format("2006-01-02 15:04:05.000000"), startPage, tableName, totalRow, cost))
+
+	tableLog.EndDataTransfer = time.Now()
+	tableLog.RowsProcessed = totalRow
+	tableLog.ExecTime = cost.Seconds()
+	file, _ := json.MarshalIndent(tableLog, "", " ")
+	_ = os.WriteFile("log/tables/"+tableName+".json", file, fs.FileMode(0644))
+
 	// 剩下显式的提交一下，不然目标库会有很多sleep的线程导致超出最大连接数
 	err = txn.Commit() // 提交事务，这里注意Commit在上面Close之后
 	if err != nil {

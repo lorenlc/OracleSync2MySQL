@@ -16,3 +16,5 @@ OracleSync2MySQL.exe
 __debug*.exe
 launch.json
 /test/*
+/log/*
+output.log

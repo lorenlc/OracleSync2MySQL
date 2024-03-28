@@ -2,14 +2,15 @@ package cmd
 
 import (
 	"fmt"
-	"github.com/liushuochen/gotable"
-	"github.com/spf13/viper"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/liushuochen/gotable"
+	"github.com/spf13/viper"
 
 	"github.com/spf13/cobra"
 )
@@ -139,14 +140,14 @@ var onlyDataCmd = &cobra.Command{
 		//遍历tableMap，先遍历表，再遍历该表的sql切片集合
 		migDataStart := time.Now()
 		for tableName, sqlFullSplit := range tableMap { //获取单个表名
-			colName, colType, tableNotExist := preMigData(tableName, sqlFullSplit) //获取单表的列名，列字段类型
-			if !tableNotExist {                                                    //目标表存在就执行数据迁移
+			colName, colType, tableNotExist, numberOfRows := preMigData(tableName, sqlFullSplit) //获取单表的列名，列字段类型
+			if !tableNotExist {                                                                  //目标表存在就执行数据迁移
 				// 遍历该表的sql切片(多个分页查询或者全表查询sql)
 				for index, sqlSplitSql := range sqlFullSplit {
 					log.Info("Table ", tableName, " total task ", len(sqlFullSplit))
 					ch <- struct{}{} //在没有被接收的情况下，至多发送n个消息到通道则被阻塞，若缓存区满，则阻塞，这里相当于占位置排队
 					wg.Add(1)        // 每运行一个goroutine等待组加1
-					go runMigration(logDir, index, tableName, sqlSplitSql, ch, colName, colType)
+					go runMigration(logDir, index, tableName, sqlSplitSql, ch, colName, colType, numberOfRows)
 				}
 			} else { //目标表不存在就往通道写1
 				log.Info("table not exists ", tableName)
